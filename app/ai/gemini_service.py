@@ -1,4 +1,4 @@
-"""AI services re-exports and module definitions for DAWEROS."""
+"""Gemini AI Vision and extraction service (app.ai module)."""
 
 from app.services.gemini_service import (
     analyze_shelf_image,

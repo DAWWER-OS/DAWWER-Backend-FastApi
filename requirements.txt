@@ -4,3 +4,10 @@ pydantic-settings
 sqlalchemy
 psycopg2-binary
 pyjwt
+pandas
+python-multipart
+google-genai
+google-generativeai
+pillow
+pytest
+httpx

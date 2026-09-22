@@ -6,9 +6,9 @@ from app.core.security import DOTNET_NAME_IDENTIFIER_CLAIM, DOTNET_ROLE_CLAIM
 
 
 def generate_token(
-    user_id: str = "user_test_123",
+    user_id: str = "7742a091-aca8-4e81-9d10-ffb04e49019c",
     role: str = "Admin",
-    email: str = "admin@daweros.com",
+    email: str = "admin@dawwer.com",
     store_id: str | None = None,
     days_valid: int = 365,
 ) -> str:
@@ -36,9 +36,11 @@ def generate_token(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate a test JWT token")
-    parser.add_argument("--user-id", default="user_test_123", help="User ID")
+    parser.add_argument(
+        "--user-id", default="7742a091-aca8-4e81-9d10-ffb04e49019c", help="User ID (UUID)"
+    )
     parser.add_argument("--role", default="Admin", help="Role (Admin, User, etc.)")
-    parser.add_argument("--email", default="admin@daweros.com", help="User email")
+    parser.add_argument("--email", default="admin@dawwer.com", help="User email")
     parser.add_argument("--store-id", default=None, help="Store ID (optional)")
     parser.add_argument("--days", type=int, default=365, help="Validity in days")
 
