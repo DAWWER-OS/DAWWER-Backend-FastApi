@@ -1,11 +1,12 @@
 from typing import List
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, verify_store_access
 from app.schemas.import_schema import BulkImportSummaryResponse
 from app.schemas.product_schema import (
     ProductCreateSchema,
+    ProductDeleteResponseSchema,
     ProductResponseSchema,
     ProductUpdateSchema,
 )
@@ -16,6 +17,7 @@ from app.services.bulk_import_service import (
 from app.services.pandas_importer import process_bulk_catalog_file
 from app.services.product_service import (
     create_product,
+    delete_product,
     get_product_by_id,
     get_store_products,
     update_product,
@@ -91,6 +93,59 @@ def get_store_product(
             detail="Product not found",
         )
     return product
+
+
+@router.delete(
+    "/{store_id}/products/{product_id}",
+    response_model=ProductDeleteResponseSchema,
+    status_code=status.HTTP_200_OK,
+    summary="Delete or deactivate product",
+    description="Soft-deactivates product (BR-15) and its associated locations by default, or permanently deletes if hard_delete=True.",
+)
+def delete_store_product(
+    store_id: str,
+    product_id: str,
+    hard_delete: bool = Query(default=False, description="Set True for hard delete, False for soft deactivation"),
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_store_access),
+) -> ProductDeleteResponseSchema:
+    try:
+        is_hard_deleted, product = delete_product(
+            db=db,
+            store_id=store_id,
+            product_id=product_id,
+            hard_delete=hard_delete,
+        )
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        )
+
+    if is_hard_deleted:
+        return ProductDeleteResponseSchema(
+            message="Product permanently deleted",
+            product_id=product_id,
+            store_id=store_id,
+            is_active=False,
+            hard_deleted=True,
+            product=None,
+        )
+
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found",
+        )
+
+    return ProductDeleteResponseSchema(
+        message="Product successfully deactivated",
+        product_id=product.id,
+        store_id=product.store_id,
+        is_active=product.is_active,
+        hard_deleted=False,
+        product=ProductResponseSchema.model_validate(product),
+    )
 
 
 @router.get(

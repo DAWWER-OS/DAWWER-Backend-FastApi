@@ -20,6 +20,7 @@ class ShelfJob(Base):
     shelf = Column(String, nullable=True)
     image_url = Column(String, nullable=True)
     extracted_drafts_count = Column(Integer, nullable=False, default=0)
+    error_message = Column(String, nullable=True)
     created_at = Column(DateTime, nullable=True, default=func.now())
     updated_at = Column(DateTime, nullable=True, default=func.now(), onupdate=func.now())
 

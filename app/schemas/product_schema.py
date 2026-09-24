@@ -43,7 +43,19 @@ class ProductUpdateSchema(BaseModel):
 class ProductResponseSchema(ProductCreateSchema):
     id: str
     store_id: str
+    is_active: bool = True
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    model_config = ConfigDict(from_attributes=True) #للتحويل الى json
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProductDeleteResponseSchema(BaseModel):
+    message: str = "Product successfully deactivated"
+    product_id: str
+    store_id: str
+    is_active: bool
+    hard_deleted: bool = False
+    product: Optional[ProductResponseSchema] = None
+
+    model_config = ConfigDict(from_attributes=True)

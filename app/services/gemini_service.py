@@ -12,8 +12,13 @@ from app.schemas.shelf_job_schema import ExtractedDraftProductSchema
 
 logger = logging.getLogger("daweros_api.gemini")
 
-PRIMARY_MODEL = "gemini-3.6-flash"
-FALLBACK_MODELS = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"]
+PRIMARY_MODEL = "gemini-3-flash-preview"
+FALLBACK_MODELS = [
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-3.6-flash",
+    "gemini-flash-latest",
+]
 
 
 def get_gemini_client() -> genai.Client:

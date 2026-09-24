@@ -38,6 +38,7 @@ class ShelfJobResponseSchema(BaseModel):
     shelf: Optional[str] = None
     image_url: Optional[str] = None
     extracted_drafts_count: int = 0
+    error_message: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
 

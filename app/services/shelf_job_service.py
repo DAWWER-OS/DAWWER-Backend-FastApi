@@ -75,15 +75,24 @@ def process_shelf_capture_job(
         if draft_records:
             db.add_all(draft_records)
 
-        job.status = JobStatusEnum.REVIEW_REQUIRED.value
+        job.status = JobStatusEnum.COMPLETED.value
         job.extracted_drafts_count = len(draft_records)
+        job.error_message = None
+        db.commit()
+        db.refresh(job)
         logger.info(
-            "Shelf job %s completed with status REVIEW_REQUIRED and %d draft products",
+            "Shelf job %s completed with status COMPLETED and %d draft products",
             job.id,
             len(draft_records),
         )
     except Exception as exc:
+        db.rollback()
         job.status = JobStatusEnum.FAILED.value
+        job.error_message = str(exc)
+        job.extracted_drafts_count = 0
+        db.add(job)
+        db.commit()
+        db.refresh(job)
         logger.error(
             "Shelf capture analysis failed for job %s (store %s): %s\n%s",
             job.id,
@@ -97,8 +106,6 @@ def process_shelf_capture_job(
             flush=True,
         )
 
-    db.commit()
-    db.refresh(job)
     return job
 
 

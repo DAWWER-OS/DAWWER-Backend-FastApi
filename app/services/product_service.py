@@ -5,8 +5,9 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import func
 
-from app.models.product import StoreProduct
+from app.models.product import ProductLocation, StoreProduct
 from app.schemas.product_schema import ProductCreateSchema, ProductUpdateSchema
 
 COLUMN_MAPPING: Dict[str, List[str]] = {
@@ -78,6 +79,54 @@ def get_product_by_id(
         )
         .first()
     )
+
+
+def delete_product(
+    db: Session,
+    store_id: str,
+    product_id: str,
+    hard_delete: bool = False,
+) -> tuple[bool, Optional[StoreProduct]]:
+    """Deletes or deactivates a product and updates associated location records.
+
+    Enforces:
+    - BR-14: Store isolation check (raises PermissionError if product exists in another store).
+    - BR-15: Soft deactivation (is_active = False) by default, or hard delete if hard_delete=True.
+    - Cascades is_active = False to associated ProductLocation records.
+
+    Returns:
+    - (is_hard_deleted: bool, product: Optional[StoreProduct])
+    - Returns (False, None) if product is not found in database.
+    - Raises PermissionError if product belongs to another store.
+    """
+    product = db.query(StoreProduct).filter(StoreProduct.id == product_id).first()
+    if not product:
+        return False, None
+
+    if str(product.store_id) != str(store_id):
+        raise PermissionError("Operation not permitted: Product belongs to another store")
+
+    if hard_delete:
+        db.query(ProductLocation).filter(
+            ProductLocation.product_id == product_id,
+            ProductLocation.store_id == store_id,
+        ).delete(synchronize_session=False)
+
+        db.delete(product)
+        db.commit()
+        return True, None
+    else:
+        product.is_active = False
+        product.updated_at = func.now()
+
+        db.query(ProductLocation).filter(
+            ProductLocation.product_id == product_id,
+            ProductLocation.store_id == store_id,
+        ).update({"is_active": False}, synchronize_session=False)
+
+        db.commit()
+        db.refresh(product)
+        return False, product
 
 
 def get_store_products(
