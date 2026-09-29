@@ -10,8 +10,11 @@ from app.core.logging import setup_logging
 from app.db.session import Base, engine
 import app.models
 from app.routers import (
+    analytics_router,
     draft_product_router,
     health_router,
+    map_router,
+    navigation_router,
     product_router,
     shelf_job_router,
     store_router,
@@ -46,6 +49,18 @@ TAGS_METADATA = [
     {
         "name": "AI Draft Approvals & Review",
         "description": "Merchant review, field correction, single approval, batch approval, and rejection of AI drafts.",
+    },
+    {
+        "name": "Store Maps & Grid Management",
+        "description": "Store map floor plans, draft revision management, and batch node/edge element updates.",
+    },
+    {
+        "name": "Navigation & Routing",
+        "description": "In-store 2D rasterized pathfinding, single-destination shortest route, turn-by-turn guidance, and multi-stop shopping trip optimization.",
+    },
+    {
+        "name": "Store Analytics",
+        "description": "Customer search event logging, top search term aggregation, and zero-result missing product discovery insights.",
     },
 ]
 
@@ -85,4 +100,6 @@ app.include_router(store_router.router)
 app.include_router(product_router.router)
 app.include_router(shelf_job_router.router)
 app.include_router(draft_product_router.router)
-
+app.include_router(map_router.router)
+app.include_router(navigation_router.router)
+app.include_router(analytics_router.router)

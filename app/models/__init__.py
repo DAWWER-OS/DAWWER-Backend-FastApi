@@ -1,3 +1,4 @@
+from app.models.analytics import SearchLog
 from app.models.audit_log import AuditLog
 from app.models.auth import RefreshToken, RevokedToken, VerificationCode
 from app.models.category import Category
@@ -39,4 +40,5 @@ __all__ = [
     "RevokedToken",
     "VerificationCode",
     "AuditLog",
+    "SearchLog",
 ]
