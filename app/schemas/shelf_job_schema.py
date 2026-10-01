@@ -43,3 +43,11 @@ class ShelfJobResponseSchema(BaseModel):
     updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ShelfJobDeleteResponseSchema(BaseModel):
+    message: str = "Shelf job successfully deleted"
+    job_id: str
+    store_id: str
+    deleted: bool = True
+

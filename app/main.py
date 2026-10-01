@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -90,8 +91,7 @@ app.add_middleware(
 setup_exception_handlers(app)
 
 # Ensure uploads directory exists and mount static files route for uploaded shelf images
-uploads_dir = Path("uploads")
-uploads_dir.mkdir(parents=True, exist_ok=True)
+os.makedirs("uploads/shelf_jobs", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Health & Production Routers
@@ -99,6 +99,7 @@ app.include_router(health_router.router)
 app.include_router(store_router.router)
 app.include_router(product_router.router)
 app.include_router(shelf_job_router.router)
+app.include_router(shelf_job_router.legacy_router)
 app.include_router(draft_product_router.router)
 app.include_router(map_router.router)
 app.include_router(navigation_router.router)

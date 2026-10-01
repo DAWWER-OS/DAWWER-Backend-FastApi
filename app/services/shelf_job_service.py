@@ -2,14 +2,19 @@ import logging
 import sys
 import traceback
 from typing import List, Optional
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.models.shelf_job import DraftProduct, ShelfJob
+from app.models.store import Store
 from app.schemas.shelf_job_schema import JobStatusEnum, ShelfJobCreateSchema
 from app.services import gemini_service
-from app.services.storage_service import save_shelf_image
+from app.services.storage_service import delete_shelf_image, save_shelf_image
 
 logger = logging.getLogger("daweros_api.shelf_job")
+
+# Enum alias for ShelfJobStatus
+ShelfJobStatus = JobStatusEnum
 
 
 def process_shelf_capture_job(
@@ -20,6 +25,14 @@ def process_shelf_capture_job(
     image_url: Optional[str] = None,
     filename: Optional[str] = None,
 ) -> ShelfJob:
+    # 0. Validate Data Integrity: verify store_id exists
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"المتجر المطلوب غير موجود: {store_id}",
+        )
+
     # 1. Save uploaded image to disk if image_url is not already provided
     saved_file_path: Optional[str] = None
     if not image_url and image_bytes:
@@ -39,7 +52,7 @@ def process_shelf_capture_job(
 
     job = ShelfJob(
         store_id=store_id,
-        status=JobStatusEnum.PROCESSING.value,
+        status=ShelfJobStatus.PROCESSING.value,
         zone=location_in.zone,
         aisle=location_in.aisle,
         rack=location_in.rack,
@@ -47,8 +60,16 @@ def process_shelf_capture_job(
         image_url=image_url,
     )
     db.add(job)
-    db.commit()
-    db.refresh(job)
+    try:
+        db.commit()
+        db.refresh(job)
+    except Exception as exc:
+        db.rollback()
+        logger.error("Database commit error creating initial shelf job for store %s: %s", store_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error during shelf job creation: {str(exc)}",
+        )
 
     # 2. Multimodal AI Analysis with Gemini
     try:
@@ -75,24 +96,29 @@ def process_shelf_capture_job(
         if draft_records:
             db.add_all(draft_records)
 
-        job.status = JobStatusEnum.COMPLETED.value
+        job.status = ShelfJobStatus.COMPLETED.value
         job.extracted_drafts_count = len(draft_records)
         job.error_message = None
-        db.commit()
-        db.refresh(job)
-        logger.info(
-            "Shelf job %s completed with status COMPLETED and %d draft products",
-            job.id,
-            len(draft_records),
-        )
+
+        try:
+            db.commit()
+            db.refresh(job)
+            logger.info(
+                "Shelf job %s completed with status COMPLETED and %d draft products",
+                job.id,
+                len(draft_records),
+            )
+        except Exception as commit_exc:
+            db.rollback()
+            logger.error("Database commit error updating shelf job %s: %s", job.id, commit_exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to commit shelf job drafts: {str(commit_exc)}",
+            )
+    except HTTPException:
+        raise
     except Exception as exc:
         db.rollback()
-        job.status = JobStatusEnum.FAILED.value
-        job.error_message = str(exc)
-        job.extracted_drafts_count = 0
-        db.add(job)
-        db.commit()
-        db.refresh(job)
         logger.error(
             "Shelf capture analysis failed for job %s (store %s): %s\n%s",
             job.id,
@@ -105,6 +131,29 @@ def process_shelf_capture_job(
             file=sys.stderr,
             flush=True,
         )
+        try:
+            job_record = db.query(ShelfJob).filter(ShelfJob.id == job.id).first()
+            if job_record:
+                job_record.status = ShelfJobStatus.FAILED.value
+                job_record.error_message = str(exc)
+                job_record.extracted_drafts_count = 0
+                db.commit()
+                db.refresh(job_record)
+                job = job_record
+            else:
+                job.status = ShelfJobStatus.FAILED.value
+                job.error_message = str(exc)
+                job.extracted_drafts_count = 0
+                db.add(job)
+                db.commit()
+                db.refresh(job)
+        except Exception as update_exc:
+            db.rollback()
+            logger.error("Failed to commit FAILED status for shelf job %s: %s", job.id, update_exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database error updating shelf job to failed: {str(update_exc)}",
+            )
 
     return job
 
@@ -132,3 +181,42 @@ def get_store_shelf_jobs(
         .limit(limit)
         .all()
     )
+
+
+def delete_shelf_job(db: Session, store_id: str, job_id: str) -> bool:
+    """Deletes a shelf job record, its associated draft products, and cleans up uploaded image files."""
+    job = (
+        db.query(ShelfJob)
+        .filter(
+            ShelfJob.id == job_id,
+            ShelfJob.store_id == store_id,
+        )
+        .first()
+    )
+    if not job:
+        return False
+
+    # 1. Safely remove associated image files from uploads/shelf_jobs/{store_id}/
+    if job.image_url:
+        delete_shelf_image(store_id=store_id, image_url=job.image_url)
+
+    # 2. Clean up associated draft products
+    db.query(DraftProduct).filter(
+        DraftProduct.shelf_job_id == job.id,
+        DraftProduct.store_id == store_id,
+    ).delete(synchronize_session=False)
+
+    # 3. Delete job record
+    db.delete(job)
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error("Database commit error deleting shelf job %s: %s", job_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error during shelf job deletion: {str(exc)}",
+        )
+
+    logger.info("Successfully deleted shelf job %s for store %s", job_id, store_id)
+    return True

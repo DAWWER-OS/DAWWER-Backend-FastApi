@@ -2,8 +2,13 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, verify_store_access
-from app.schemas.shelf_job_schema import ShelfJobCreateSchema, ShelfJobResponseSchema
+from app.api.deps import get_current_user, get_db, verify_store_access
+from app.models.shelf_job import ShelfJob
+from app.schemas.shelf_job_schema import (
+    ShelfJobCreateSchema,
+    ShelfJobDeleteResponseSchema,
+    ShelfJobResponseSchema,
+)
 from app.services import shelf_job_service
 
 router = APIRouter(prefix="/api/v1/stores", tags=["Shelf Jobs & Gemini AI Capture"])
@@ -91,4 +96,155 @@ def list_store_shelf_jobs(
     )
 
 
+@router.delete(
+    "/{store_id}/shelf-jobs/{job_id}",
+    response_model=ShelfJobDeleteResponseSchema,
+    status_code=status.HTTP_200_OK,
+    summary="Delete shelf job and associated image files",
+)
+def delete_shelf_job(
+    store_id: str,
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(verify_store_access),
+) -> ShelfJobDeleteResponseSchema:
+    job = shelf_job_service.get_shelf_job_by_id(db=db, store_id=store_id, job_id=job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Shelf job not found",
+        )
+
+    success = shelf_job_service.delete_shelf_job(db=db, store_id=store_id, job_id=job_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Shelf job not found",
+        )
+
+    return ShelfJobDeleteResponseSchema(
+        message="Shelf job successfully deleted",
+        job_id=job_id,
+        store_id=store_id,
+        deleted=True,
+    )
+
+
 router.router = router
+
+# Legacy Router for un-prefixed or deprecated paths:
+# /stores/{store_id}/shelf-jobs/{job_id}
+# /shelf/sessions/{id}
+# /shelf/captures/{id}
+legacy_router = APIRouter(tags=["Shelf Jobs & Gemini AI Capture (Legacy)"])
+
+
+@legacy_router.delete(
+    "/stores/{store_id}/shelf-jobs/{job_id}",
+    response_model=ShelfJobDeleteResponseSchema,
+    status_code=status.HTTP_200_OK,
+    summary="Legacy delete shelf job under store path",
+    include_in_schema=False,
+)
+def delete_shelf_job_legacy_store_path(
+    store_id: str,
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(verify_store_access),
+) -> ShelfJobDeleteResponseSchema:
+    return delete_shelf_job(store_id=store_id, job_id=job_id, db=db, current_user=current_user)
+
+
+@legacy_router.delete(
+    "/shelf/sessions/{id}",
+    response_model=ShelfJobDeleteResponseSchema,
+    status_code=status.HTTP_200_OK,
+    summary="Legacy delete shelf session route",
+)
+@legacy_router.delete(
+    "/shelf/captures/{id}",
+    response_model=ShelfJobDeleteResponseSchema,
+    status_code=status.HTTP_200_OK,
+    summary="Legacy delete shelf capture route",
+)
+@legacy_router.delete(
+    "/api/v1/shelf/sessions/{id}",
+    response_model=ShelfJobDeleteResponseSchema,
+    status_code=status.HTTP_200_OK,
+    include_in_schema=False,
+)
+@legacy_router.delete(
+    "/api/v1/shelf/captures/{id}",
+    response_model=ShelfJobDeleteResponseSchema,
+    status_code=status.HTTP_200_OK,
+    include_in_schema=False,
+)
+def delete_shelf_job_legacy(
+    id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> ShelfJobDeleteResponseSchema:
+    # 1. Look up shelf job by ID to discover store_id
+    job = db.query(ShelfJob).filter(ShelfJob.id == id).first()
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Shelf job not found",
+        )
+
+    # 2. Enforce BR-14 store isolation scoping
+    verify_store_access(store_id=job.store_id, current_user=current_user, db=db)
+
+    # 3. Safely delete job and files
+    success = shelf_job_service.delete_shelf_job(db=db, store_id=job.store_id, job_id=job.id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Shelf job not found",
+        )
+
+    return ShelfJobDeleteResponseSchema(
+        message="Shelf job successfully deleted",
+        job_id=job.id,
+        store_id=job.store_id,
+        deleted=True,
+    )
+
+
+@legacy_router.get(
+    "/shelf/sessions/{id}",
+    response_model=ShelfJobResponseSchema,
+    status_code=status.HTTP_200_OK,
+    summary="Legacy get shelf session route",
+)
+@legacy_router.get(
+    "/shelf/captures/{id}",
+    response_model=ShelfJobResponseSchema,
+    status_code=status.HTTP_200_OK,
+    summary="Legacy get shelf capture route",
+)
+@legacy_router.get(
+    "/api/v1/shelf/sessions/{id}",
+    response_model=ShelfJobResponseSchema,
+    status_code=status.HTTP_200_OK,
+    include_in_schema=False,
+)
+@legacy_router.get(
+    "/api/v1/shelf/captures/{id}",
+    response_model=ShelfJobResponseSchema,
+    status_code=status.HTTP_200_OK,
+    include_in_schema=False,
+)
+def get_shelf_job_legacy(
+    id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> ShelfJobResponseSchema:
+    job = db.query(ShelfJob).filter(ShelfJob.id == id).first()
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Shelf job not found",
+        )
+    verify_store_access(store_id=job.store_id, current_user=current_user, db=db)
+    return job

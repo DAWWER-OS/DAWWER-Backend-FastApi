@@ -73,3 +73,43 @@ def save_shelf_image(
     public_url = f"/uploads/shelf_jobs/{store_id}/{url_filename}"
     logger.info("Saved shelf image for store %s to %s (URL: %s)", store_id, file_path, public_url)
     return str(file_path), public_url
+
+
+def delete_shelf_image(store_id: str, image_url: Optional[str]) -> bool:
+    """Safely removes an uploaded shelf image from disk within uploads/shelf_jobs/{store_id}/."""
+    if not image_url:
+        return False
+
+    try:
+        decoded_url = urllib.parse.unquote(image_url)
+        filename = Path(decoded_url).name
+
+        store_dir = (SHELF_UPLOADS_DIR / str(store_id)).resolve()
+        file_path = (store_dir / filename).resolve()
+
+        # Prevent directory traversal attacks
+        if not str(file_path).startswith(str(store_dir)):
+            logger.warning(
+                "Security warning: attempted path traversal in delete_shelf_image: %s",
+                image_url,
+            )
+            return False
+
+        if file_path.is_file():
+            file_path.unlink(missing_ok=True)
+            logger.info("Deleted shelf image file: %s", file_path)
+            return True
+
+        # Also attempt direct check from repository root if relative
+        direct_path = Path(decoded_url.lstrip("/")).resolve()
+        if direct_path.is_file() and str(direct_path).startswith(str(store_dir)):
+            direct_path.unlink(missing_ok=True)
+            logger.info("Deleted shelf image file via direct path: %s", direct_path)
+            return True
+
+        logger.info("Shelf image file not found on disk, skipping removal: %s", file_path)
+        return False
+    except Exception as exc:
+        logger.warning("Error deleting shelf image %s for store %s: %s", image_url, store_id, exc)
+        return False
+

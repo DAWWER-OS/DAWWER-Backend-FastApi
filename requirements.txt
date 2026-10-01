@@ -13,3 +13,5 @@ pytest
 httpx
 openpyxl
 python-multipart
+psycopg[binary]
+
