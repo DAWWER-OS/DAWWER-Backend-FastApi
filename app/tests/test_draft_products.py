@@ -175,6 +175,53 @@ def test_reject_draft_product(store, sample_draft):
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "REJECTED"
+    assert data["deleted"] is True
+    assert data["product_id"] == sample_draft.id
+
+    # Verify that listing draft products excludes REJECTED by default (prevents reappearing upon refresh)
+    list_resp = client.get(f"/api/v1/stores/{store.id}/draft-products", headers=headers)
+    assert list_resp.status_code == 200
+    assert not any(d["id"] == sample_draft.id for d in list_resp.json())
+
+
+def test_delete_draft_product_success(store, sample_draft):
+    token = create_token(user_id=store.owner_id, store_id=store.id)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Delete draft product item
+    del_resp = client.delete(
+        f"/api/v1/stores/{store.id}/draft-products/{sample_draft.id}",
+        headers=headers,
+    )
+    assert del_resp.status_code == 200
+    del_data = del_resp.json()
+    assert del_data["deleted"] is True
+    assert del_data["product_id"] == sample_draft.id
+    assert del_data["draft_id"] == sample_draft.id
+    assert del_data["hard_deleted"] is True
+
+    # Verify excluded permanently from GET
+    list_resp = client.get(f"/api/v1/stores/{store.id}/draft-products", headers=headers)
+    assert list_resp.status_code == 200
+    assert not any(d["id"] == sample_draft.id for d in list_resp.json())
+
+    single_resp = client.get(f"/api/v1/stores/{store.id}/draft-products/{sample_draft.id}", headers=headers)
+    assert single_resp.status_code == 404
+
+
+def test_delete_shelf_job_item_route(store, sample_draft):
+    token = create_token(user_id=store.owner_id, store_id=store.id)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Delete via shelf job item route
+    del_resp = client.delete(
+        f"/api/v1/stores/{store.id}/shelf-jobs/{sample_draft.shelf_job_id}/items/{sample_draft.id}",
+        headers=headers,
+    )
+    assert del_resp.status_code == 200
+    del_data = del_resp.json()
+    assert del_data["deleted"] is True
+    assert del_data["product_id"] == sample_draft.id
 
 
 def test_draft_product_isolation_br14_forbidden(store, sample_draft):

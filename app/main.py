@@ -22,6 +22,7 @@ from app.routers import (
 )
 from app.schemas.response import ErrorResponseModel
 
+
 setup_logging()
 
 try:
@@ -89,6 +90,15 @@ app.add_middleware(
 )
 
 setup_exception_handlers(app)
+ 
+ 
+@app.get("/", tags=["System Health"])
+def root():
+    return {
+        "status": "online",
+        "service": "DAWER API Gateway",
+        "docs_url": "/docs",
+    }
 
 # Ensure uploads directory exists and mount static files route for uploaded shelf images
 os.makedirs("uploads/shelf_jobs", exist_ok=True)

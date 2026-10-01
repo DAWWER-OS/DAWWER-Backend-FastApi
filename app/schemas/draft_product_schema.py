@@ -52,3 +52,14 @@ class DraftProductApprovalResponseSchema(BaseModel):
     status: str
     store_product_id: Optional[str] = None
     message: str
+    deleted: Optional[bool] = None
+    product_id: Optional[str] = None
+
+
+class DraftProductDeleteResponseSchema(BaseModel):
+    message: str = "Draft product item successfully deleted"
+    draft_id: str
+    product_id: str
+    store_id: str
+    deleted: bool = True
+    hard_deleted: bool = True

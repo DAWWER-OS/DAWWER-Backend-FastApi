@@ -1,9 +1,10 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db, verify_store_access
 from app.models.shelf_job import ShelfJob
+from app.schemas.draft_product_schema import DraftProductDeleteResponseSchema
 from app.schemas.shelf_job_schema import (
     ShelfJobCreateSchema,
     ShelfJobDeleteResponseSchema,
@@ -124,9 +125,47 @@ def delete_shelf_job(
 
     return ShelfJobDeleteResponseSchema(
         message="Shelf job successfully deleted",
-        job_id=job_id,
-        store_id=store_id,
+        job_id=str(job_id),
+        id=str(job_id),
+        product_id=str(job_id),
+        store_id=str(store_id),
         deleted=True,
+    )
+
+
+@router.delete(
+    "/{store_id}/shelf-jobs/{job_id}/items/{item_id}",
+    response_model=DraftProductDeleteResponseSchema,
+    status_code=status.HTTP_200_OK,
+    summary="Delete single item from a shelf job",
+)
+def delete_shelf_job_item(
+    store_id: str,
+    job_id: str,
+    item_id: str,
+    hard_delete: bool = Query(default=True, description="Permanently delete from database if True, else soft-reject"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(verify_store_access),
+) -> DraftProductDeleteResponseSchema:
+    is_hard_deleted, draft = shelf_job_service.delete_draft_product(
+        db=db,
+        store_id=store_id,
+        draft_id=item_id,
+        hard_delete=hard_delete,
+    )
+    if not is_hard_deleted and not draft:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Shelf job item '{item_id}' not found",
+        )
+
+    return DraftProductDeleteResponseSchema(
+        message="Shelf job item permanently deleted" if is_hard_deleted else "Shelf job item rejected",
+        draft_id=str(item_id),
+        product_id=str(item_id),
+        store_id=str(store_id),
+        deleted=True,
+        hard_deleted=is_hard_deleted,
     )
 
 
@@ -205,8 +244,10 @@ def delete_shelf_job_legacy(
 
     return ShelfJobDeleteResponseSchema(
         message="Shelf job successfully deleted",
-        job_id=job.id,
-        store_id=job.store_id,
+        job_id=str(job.id),
+        id=str(job.id),
+        product_id=str(job.id),
+        store_id=str(job.store_id),
         deleted=True,
     )
 

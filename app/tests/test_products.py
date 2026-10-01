@@ -286,6 +286,7 @@ def test_delete_product_soft_delete_success(store):
     assert del_resp.status_code == 200
     data = del_resp.json()
     assert data["message"] == "Product successfully deactivated"
+    assert data["deleted"] is True
     assert data["product_id"] == product_id
     assert data["store_id"] == str(store.id)
     assert data["is_active"] is False
@@ -304,6 +305,23 @@ def test_delete_product_soft_delete_success(store):
         assert db_loc.is_active is False
     finally:
         db.close()
+
+    # Verify that executing GET /products (page refresh) strictly excludes the soft-deleted product
+    list_resp = client.get(f"/api/v1/stores/{store.id}/products", headers=headers)
+    assert list_resp.status_code == 200
+    products = list_resp.json()
+    assert not any(p["id"] == product_id for p in products), "Soft-deleted product must NOT appear in default product list on refresh"
+
+    # Verify single GET returns 404 unless include_inactive=True is specified
+    single_resp = client.get(f"/api/v1/stores/{store.id}/products/{product_id}", headers=headers)
+    assert single_resp.status_code == 404
+
+    single_resp_inactive = client.get(
+        f"/api/v1/stores/{store.id}/products/{product_id}?include_inactive=true",
+        headers=headers,
+    )
+    assert single_resp_inactive.status_code == 200
+    assert single_resp_inactive.json()["id"] == product_id
 
 
 def test_delete_product_hard_delete_success(store):
@@ -334,6 +352,8 @@ def test_delete_product_hard_delete_success(store):
     assert del_resp.status_code == 200
     data = del_resp.json()
     assert data["message"] == "Product permanently deleted"
+    assert data["deleted"] is True
+    assert data["product_id"] == product_id
     assert data["hard_deleted"] is True
     assert data["is_active"] is False
     assert data["product"] is None
@@ -345,6 +365,14 @@ def test_delete_product_hard_delete_success(store):
         assert db_prod is None
     finally:
         db.close()
+
+    # Verify GET excludes hard-deleted product permanently
+    list_resp = client.get(f"/api/v1/stores/{store.id}/products", headers=headers)
+    assert list_resp.status_code == 200
+    assert not any(p["id"] == product_id for p in list_resp.json())
+
+    single_resp = client.get(f"/api/v1/stores/{store.id}/products/{product_id}", headers=headers)
+    assert single_resp.status_code == 404
 
 
 def test_delete_product_not_found_404(store):

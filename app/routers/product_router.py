@@ -83,10 +83,16 @@ def update_store_product(
 def get_store_product(
     store_id: str,
     product_id: str,
+    include_inactive: bool = Query(default=False, description="Set True to include deactivated/soft-deleted product"),
     db: Session = Depends(get_db),
     current_user=Depends(verify_store_access),
 ) -> ProductResponseSchema:
-    product = get_product_by_id(db=db, store_id=store_id, product_id=product_id)
+    product = get_product_by_id(
+        db=db,
+        store_id=store_id,
+        product_id=product_id,
+        include_inactive=include_inactive,
+    )
     if not product:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -125,8 +131,9 @@ def delete_store_product(
     if is_hard_deleted:
         return ProductDeleteResponseSchema(
             message="Product permanently deleted",
-            product_id=product_id,
-            store_id=store_id,
+            product_id=str(product_id),
+            store_id=str(store_id),
+            deleted=True,
             is_active=False,
             hard_deleted=True,
             product=None,
@@ -140,8 +147,9 @@ def delete_store_product(
 
     return ProductDeleteResponseSchema(
         message="Product successfully deactivated",
-        product_id=product.id,
-        store_id=product.store_id,
+        product_id=str(product.id),
+        store_id=str(product.store_id),
+        deleted=True,
         is_active=product.is_active,
         hard_deleted=False,
         product=ProductResponseSchema.model_validate(product),
@@ -158,10 +166,17 @@ def list_store_products(
     store_id: str,
     skip: int = 0,
     limit: int = 100,
+    include_inactive: bool = Query(default=False, description="Set True to include deactivated/soft-deleted products"),
     db: Session = Depends(get_db),
     current_user=Depends(verify_store_access),
 ) -> List[ProductResponseSchema]:
-    return get_store_products(db=db, store_id=store_id, skip=skip, limit=limit)
+    return get_store_products(
+        db=db,
+        store_id=store_id,
+        skip=skip,
+        limit=limit,
+        include_inactive=include_inactive,
+    )
 
 
 @router.post(

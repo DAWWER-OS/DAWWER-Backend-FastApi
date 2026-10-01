@@ -2,6 +2,7 @@ from app.schemas.category import CategoryBase, CategoryCreate, CategoryResponse
 from app.schemas.draft_product_schema import (
     DraftProductApprovalResponseSchema,
     DraftProductBatchApproveSchema,
+    DraftProductDeleteResponseSchema,
     DraftProductResponseSchema,
     DraftProductStatusEnum,
     DraftProductUpdateSchema,
@@ -116,6 +117,7 @@ __all__ = [
     "DraftProductUpdateSchema",
     "DraftProductBatchApproveSchema",
     "DraftProductApprovalResponseSchema",
+    "DraftProductDeleteResponseSchema",
     # General / User / Token
     "ResponseModel",
     "ErrorResponseModel",

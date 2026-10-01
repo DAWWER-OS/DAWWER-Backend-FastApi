@@ -207,9 +207,12 @@ def delete_shelf_job(db: Session, store_id: str, job_id: str) -> bool:
     ).delete(synchronize_session=False)
 
     # 3. Delete job record
+    logger.info("Initiating deletion of shelf job %s and its child draft products in store %s", job_id, store_id)
     db.delete(job)
     try:
+        logger.info("Committing deletion transaction for shelf job %s", job_id)
         db.commit()
+        logger.info("Successfully committed deletion of shelf job %s", job_id)
     except Exception as exc:
         db.rollback()
         logger.error("Database commit error deleting shelf job %s: %s", job_id, exc)
@@ -220,3 +223,51 @@ def delete_shelf_job(db: Session, store_id: str, job_id: str) -> bool:
 
     logger.info("Successfully deleted shelf job %s for store %s", job_id, store_id)
     return True
+
+
+def delete_draft_product(
+    db: Session,
+    store_id: str,
+    draft_id: str,
+    hard_delete: bool = True,
+) -> tuple[bool, Optional[DraftProduct]]:
+    """Deletes or rejects an AI-extracted draft product item.
+
+    Returns:
+    - (is_hard_deleted: bool, draft: Optional[DraftProduct])
+    """
+    draft = (
+        db.query(DraftProduct)
+        .filter(DraftProduct.id == draft_id, DraftProduct.store_id == store_id)
+        .first()
+    )
+    if not draft:
+        logger.warning("Draft product %s not found for deletion in store %s", draft_id, store_id)
+        return False, None
+
+    if hard_delete:
+        logger.info("Initiating hard delete for draft product %s in store %s", draft_id, store_id)
+        db.delete(draft)
+        try:
+            logger.info("Committing hard delete of draft product %s", draft_id)
+            db.commit()
+            logger.info("Successfully committed hard delete of draft product %s", draft_id)
+            return True, None
+        except Exception as exc:
+            db.rollback()
+            logger.error("Database commit error hard-deleting draft product %s: %s", draft_id, exc)
+            raise
+    else:
+        logger.info("Initiating soft delete (status=REJECTED) for draft product %s in store %s", draft_id, store_id)
+        draft.status = "REJECTED"
+        draft.updated_at = func.now()
+        try:
+            logger.info("Committing rejection status for draft product %s", draft_id)
+            db.commit()
+            db.refresh(draft)
+            logger.info("Successfully committed rejection of draft product %s", draft_id)
+            return False, draft
+        except Exception as exc:
+            db.rollback()
+            logger.error("Database commit error rejecting draft product %s: %s", draft_id, exc)
+            raise

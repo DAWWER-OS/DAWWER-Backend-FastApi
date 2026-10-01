@@ -54,6 +54,7 @@ class ProductDeleteResponseSchema(BaseModel):
     message: str = "Product successfully deactivated"
     product_id: str
     store_id: str
+    deleted: bool = True
     is_active: bool
     hard_deleted: bool = False
     product: Optional[ProductResponseSchema] = None

@@ -1,5 +1,6 @@
 import difflib
 import io
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 import pandas as pd
@@ -9,6 +10,8 @@ from sqlalchemy.sql import func
 
 from app.models.product import ProductLocation, StoreProduct
 from app.schemas.product_schema import ProductCreateSchema, ProductUpdateSchema
+
+logger = logging.getLogger(__name__)
 
 COLUMN_MAPPING: Dict[str, List[str]] = {
     "product_name": ["product_name", "اسم المنتج", "اسم الصنف", "المنتج", "الصنف", "Name", "Product Name"],
@@ -55,7 +58,7 @@ def update_product(
     product_id: str,
     product_in: ProductUpdateSchema,
 ) -> Optional[StoreProduct]:
-    product = get_product_by_id(db, store_id=store_id, product_id=product_id)
+    product = get_product_by_id(db, store_id=store_id, product_id=product_id, include_inactive=True)
     if not product:
         return None
 
@@ -63,22 +66,29 @@ def update_product(
     for field, value in update_data.items():
         setattr(product, field, value)
 
-    db.commit()
-    db.refresh(product)
-    return product
+    try:
+        db.commit()
+        db.refresh(product)
+        return product
+    except Exception as exc:
+        db.rollback()
+        logger.error("Database commit error updating product %s: %s", product_id, exc)
+        raise
 
 
 def get_product_by_id(
-    db: Session, store_id: str, product_id: str
+    db: Session,
+    store_id: str,
+    product_id: str,
+    include_inactive: bool = False,
 ) -> Optional[StoreProduct]:
-    return (
-        db.query(StoreProduct)
-        .filter(
-            StoreProduct.id == product_id,
-            StoreProduct.store_id == store_id,
-        )
-        .first()
+    query = db.query(StoreProduct).filter(
+        StoreProduct.id == product_id,
+        StoreProduct.store_id == store_id,
     )
+    if not include_inactive:
+        query = query.filter(StoreProduct.is_active == True)
+    return query.first()
 
 
 def delete_product(
@@ -101,44 +111,76 @@ def delete_product(
     """
     product = db.query(StoreProduct).filter(StoreProduct.id == product_id).first()
     if not product:
+        logger.warning("Product %s not found for deletion in store %s", product_id, store_id)
         return False, None
 
     if str(product.store_id) != str(store_id):
+        logger.error(
+            "Store isolation violation: Product %s belongs to store %s, not %s",
+            product_id,
+            product.store_id,
+            store_id,
+        )
         raise PermissionError("Operation not permitted: Product belongs to another store")
 
     if hard_delete:
-        db.query(ProductLocation).filter(
-            ProductLocation.product_id == product_id,
-            ProductLocation.store_id == store_id,
-        ).delete(synchronize_session=False)
+        logger.info(
+            "Initiating hard delete for product_id=%s in store_id=%s. Unlinking/deleting child ProductLocations.",
+            product_id,
+            store_id,
+        )
+        try:
+            db.query(ProductLocation).filter(
+                ProductLocation.product_id == product_id,
+                ProductLocation.store_id == store_id,
+            ).delete(synchronize_session=False)
 
-        db.delete(product)
-        db.commit()
-        return True, None
+            db.delete(product)
+            logger.info("Committing hard delete transaction for product_id=%s", product_id)
+            db.commit()
+            logger.info("Successfully committed hard delete for product_id=%s", product_id)
+            return True, None
+        except Exception as exc:
+            db.rollback()
+            logger.error("Database commit error hard-deleting product %s: %s", product_id, exc)
+            raise
     else:
-        product.is_active = False
-        product.updated_at = func.now()
+        logger.info(
+            "Initiating soft delete (deactivation) for product_id=%s in store_id=%s",
+            product_id,
+            store_id,
+        )
+        try:
+            product.is_active = False
+            product.updated_at = func.now()
 
-        db.query(ProductLocation).filter(
-            ProductLocation.product_id == product_id,
-            ProductLocation.store_id == store_id,
-        ).update({"is_active": False}, synchronize_session=False)
+            db.query(ProductLocation).filter(
+                ProductLocation.product_id == product_id,
+                ProductLocation.store_id == store_id,
+            ).update({"is_active": False}, synchronize_session=False)
 
-        db.commit()
-        db.refresh(product)
-        return False, product
+            logger.info("Committing soft delete (is_active=False) transaction for product_id=%s", product_id)
+            db.commit()
+            db.refresh(product)
+            logger.info("Successfully committed soft delete for product_id=%s", product_id)
+            return False, product
+        except Exception as exc:
+            db.rollback()
+            logger.error("Database commit error soft-deleting product %s: %s", product_id, exc)
+            raise
 
 
 def get_store_products(
-    db: Session, store_id: str, skip: int = 0, limit: int = 100
+    db: Session,
+    store_id: str,
+    skip: int = 0,
+    limit: int = 100,
+    include_inactive: bool = False,
 ) -> List[StoreProduct]:
-    return (
-        db.query(StoreProduct)
-        .filter(StoreProduct.store_id == store_id)
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
+    query = db.query(StoreProduct).filter(StoreProduct.store_id == store_id)
+    if not include_inactive:
+        query = query.filter(StoreProduct.is_active == True)
+    return query.offset(skip).limit(limit).all()
 
 
 def bulk_upload_products(

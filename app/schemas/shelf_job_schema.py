@@ -48,6 +48,8 @@ class ShelfJobResponseSchema(BaseModel):
 class ShelfJobDeleteResponseSchema(BaseModel):
     message: str = "Shelf job successfully deleted"
     job_id: str
+    id: Optional[str] = None
+    product_id: Optional[str] = None
     store_id: str
     deleted: bool = True
 

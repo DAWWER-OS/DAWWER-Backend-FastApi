@@ -10,9 +10,11 @@ from app.models.shelf_job import DraftProduct
 from app.schemas.draft_product_schema import (
     DraftProductApprovalResponseSchema,
     DraftProductBatchApproveSchema,
+    DraftProductDeleteResponseSchema,
     DraftProductResponseSchema,
     DraftProductUpdateSchema,
 )
+from app.services import shelf_job_service
 
 router = APIRouter(prefix="/api/v1/stores", tags=["AI Draft Approvals & Review"])
 
@@ -28,6 +30,7 @@ def list_draft_products(
     store_id: str,
     shelf_job_id: Optional[str] = Query(default=None, description="Filter by shelf job ID"),
     status_filter: Optional[str] = Query(default=None, alias="status", description="Filter by status (PENDING_REVIEW, APPROVED, REJECTED)"),
+    include_rejected: bool = Query(default=False, description="Set True to include rejected draft products"),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -38,6 +41,8 @@ def list_draft_products(
         query = query.filter(DraftProduct.shelf_job_id == shelf_job_id)
     if status_filter:
         query = query.filter(DraftProduct.status == status_filter.upper())
+    elif not include_rejected:
+        query = query.filter(DraftProduct.status != "REJECTED")
 
     drafts = query.offset(skip).limit(limit).all()
     return [DraftProductResponseSchema.model_validate(d) for d in drafts]
@@ -212,13 +217,58 @@ def reject_draft_product(
 
     draft.status = "REJECTED"
     draft.updated_at = func.now()
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error rejecting draft product: {str(exc)}",
+        )
 
     return DraftProductApprovalResponseSchema(
         draft_id=draft.id,
+        product_id=str(draft.id),
         status="REJECTED",
         store_product_id=None,
         message="Draft product rejected successfully",
+        deleted=True,
+    )
+
+
+@router.delete(
+    "/{store_id}/draft-products/{draft_id}",
+    response_model=DraftProductDeleteResponseSchema,
+    status_code=status.HTTP_200_OK,
+    summary="Delete extracted AI draft product",
+    description="Permanently delete or reject an AI-extracted shelf item.",
+)
+def delete_draft_product_endpoint(
+    store_id: str,
+    draft_id: str,
+    hard_delete: bool = Query(default=True, description="Permanently delete from database if True, else soft-reject"),
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_store_access),
+) -> DraftProductDeleteResponseSchema:
+    is_hard_deleted, draft = shelf_job_service.delete_draft_product(
+        db=db,
+        store_id=store_id,
+        draft_id=draft_id,
+        hard_delete=hard_delete,
+    )
+    if not is_hard_deleted and not draft:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Draft product '{draft_id}' not found",
+        )
+
+    return DraftProductDeleteResponseSchema(
+        message="Draft product item permanently deleted" if is_hard_deleted else "Draft product item rejected",
+        draft_id=str(draft_id),
+        product_id=str(draft_id),
+        store_id=str(store_id),
+        deleted=True,
+        hard_deleted=is_hard_deleted,
     )
 
 

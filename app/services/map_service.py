@@ -925,13 +925,23 @@ class MapService:
         location.map_target_node_id = None
         location.is_active = False
 
-        db.delete(location)
-        db.commit()
+        prod_id = str(location.product_id) if location.product_id else None
+        try:
+            logger.info("Committing unlinking/deletion of product placement %s", placement_id)
+            db.delete(location)
+            db.commit()
+            logger.info("Successfully committed unlinking of product placement %s", placement_id)
+        except Exception as exc:
+            db.rollback()
+            logger.error("Database error unlinking product placement %s: %s", placement_id, exc)
+            raise
 
         return {
             "status": "success",
             "message": "Product placement unlinked successfully from map shelf",
             "placement_id": str(placement_id),
+            "product_id": prod_id,
+            "deleted": True,
         }
 
     @classmethod

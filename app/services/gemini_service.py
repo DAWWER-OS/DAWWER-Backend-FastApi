@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import sys
 import traceback
 from typing import List
@@ -12,11 +13,13 @@ from app.schemas.shelf_job_schema import ExtractedDraftProductSchema
 
 logger = logging.getLogger("daweros_api.gemini")
 
-PRIMARY_MODEL = "gemini-3-flash-preview"
+PRIMARY_MODEL = "gemini-2.5-flash"
 FALLBACK_MODELS = [
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-3-flash-preview",
     "gemini-3.1-flash-lite",
     "gemini-3.1-flash-lite-preview",
-    "gemini-3.6-flash",
     "gemini-flash-latest",
 ]
 
@@ -47,18 +50,33 @@ def analyze_shelf_image(image_bytes: bytes) -> List[ExtractedDraftProductSchema]
         mime_type = "image/webp"
 
     prompt = (
-        "You are an expert retail computer vision system specializing in shelf inventory extraction.\n"
-        "Analyze this retail store shelf image and detect each visible product item on the shelf.\n"
-        "Return ONLY a JSON array with objects matching:\n"
-        '{"proposed_name": str, "estimated_price": float, "category_hint": str, "pack_size": str, "barcode_detected": str, "confidence_score": float}\n'
-        "If a price tag is visible near the product, extract the estimated_price as float (otherwise 0.0).\n"
-        "If no products are visible or image is blank/irrelevant, return an empty array [].\n"
-        "confidence_score must be a float between 0.0 and 1.0."
+        "You are an expert retail computer vision assistant specializing in supermarket inventory and shelf inspection "
+        "in Arabic and Palestinian retail store contexts.\n\n"
+        "Analyze this retail shelf photo and detect all visible distinct commercial retail products on the shelf.\n"
+        "For each detected product, extract its details and return a valid JSON array of objects with the following schema:\n"
+        "[\n"
+        "  {\n"
+        '    "proposed_name": "اسم المنتج الشائع بالعربية (مثال: حليب المراعي 2 لتر، جبنة كيري، شيبس شيبسي بالملح)",\n'
+        '    "estimated_price": 0.0,\n'
+        '    "category_hint": "الفئة (مثل: ألبان وأجبان، مشروبات وعصائر، سناكات وشوكولاتة، منظفات، مواد غذائية)",\n'
+        '    "pack_size": "حجم العبوة إن وجد (مثل: 500 مل، 1 كغم، 250 جم، أو نص فارغ \"\")",\n'
+        '    "barcode_detected": "الباركود إن كان ظاهراً ومقروءاً على العبوة أو بطاقة الرف، وإلا نص فارغ \"\"",\n'
+        '    "confidence_score": 0.90\n'
+        "  }\n"
+        "]\n\n"
+        "Rules & Guidelines:\n"
+        "1. Detect every clearly visible product brand and packaging on the shelves.\n"
+        "2. Provide 'proposed_name' in Arabic as commonly called in local Palestinian/Arab grocery stores (or include English brand if prominent).\n"
+        "3. If a price tag is visible near or under the product, extract 'estimated_price' as a float; if no price is visible, use 0.0 as default.\n"
+        "4. If barcode is visible and legible, extract it into 'barcode_detected'; otherwise assign an empty string \"\".\n"
+        "5. If no products are visible at all, or the photo is completely blank/unrelated, return an empty array [].\n"
+        "6. Return ONLY the JSON array. Do not include markdown code block formatting (such as ```json) or explanatory text."
     )
 
     models_to_try = [PRIMARY_MODEL] + [m for m in FALLBACK_MODELS if m != PRIMARY_MODEL]
     last_error: Exception | None = None
     response = None
+    selected_model = None
 
     for model_name in models_to_try:
         try:
@@ -74,6 +92,7 @@ def analyze_shelf_image(image_bytes: bytes) -> List[ExtractedDraftProductSchema]
                 ),
             )
             if response and response.text:
+                selected_model = model_name
                 break
         except Exception as exc:
             last_error = exc
@@ -90,19 +109,27 @@ def analyze_shelf_image(image_bytes: bytes) -> List[ExtractedDraftProductSchema]
         print(f"\n[GEMINI API ERROR] {err_detail}\n{traceback.format_exc()}", file=sys.stderr, flush=True)
         raise ValueError(err_detail)
 
+    # Detailed logging of raw response text for diagnostic purposes
+    logger.info("Raw Gemini API response from model '%s' (length: %d chars):\n%s", selected_model, len(response.text), response.text)
+
+    # Robust stripping of markdown code blocks (```json ... ``` or ``` ... ```)
     raw_text = response.text.strip()
-    if raw_text.startswith("```"):
-        lines = raw_text.splitlines()
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        raw_text = "\n".join(lines).strip()
+    if "```" in raw_text:
+        match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw_text, re.IGNORECASE)
+        if match:
+            raw_text = match.group(1).strip()
+        else:
+            lines = raw_text.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            raw_text = "\n".join(lines).strip()
 
     try:
         data = json.loads(raw_text)
     except json.JSONDecodeError as exc:
-        err_detail = f"Failed to parse Gemini response as JSON: {exc}. Raw text: {raw_text[:200]}"
+        err_detail = f"Failed to parse Gemini response as JSON: {exc}. Raw text: {raw_text[:300]}"
         logger.error("%s\n%s", err_detail, traceback.format_exc())
         print(f"\n[GEMINI PARSE ERROR] {err_detail}\n{traceback.format_exc()}", file=sys.stderr, flush=True)
         raise ValueError(err_detail)
@@ -110,7 +137,7 @@ def analyze_shelf_image(image_bytes: bytes) -> List[ExtractedDraftProductSchema]
     if not isinstance(data, list):
         # In case model returned a single dictionary wrapping a list e.g. {"products": [...]}
         if isinstance(data, dict):
-            for key in ("products", "items", "detected_products", "data"):
+            for key in ("products", "items", "detected_products", "data", "draft_products"):
                 if key in data and isinstance(data[key], list):
                     data = data[key]
                     break
@@ -119,13 +146,51 @@ def analyze_shelf_image(image_bytes: bytes) -> List[ExtractedDraftProductSchema]
         else:
             raise ValueError("Gemini output must be a JSON array of products")
 
+    if len(data) == 0:
+        logger.warning(
+            "Gemini response parsed into an empty product array []. Model: '%s'. Raw response was:\n%s",
+            selected_model,
+            response.text,
+        )
+
     draft_products = []
     for item in data:
         if isinstance(item, dict):
             # Ensure required proposed_name has a fallback if missing
             if not item.get("proposed_name"):
                 item["proposed_name"] = item.get("name") or item.get("title") or "منتج غير محدد"
+
+            # Default missing or invalid prices to 0.0
+            if item.get("estimated_price") is None:
+                item["estimated_price"] = 0.0
+            else:
+                try:
+                    item["estimated_price"] = float(item["estimated_price"])
+                except (ValueError, TypeError):
+                    item["estimated_price"] = 0.0
+
+            # Default missing or None barcodes to empty string ""
+            if not item.get("barcode_detected"):
+                item["barcode_detected"] = ""
+            else:
+                item["barcode_detected"] = str(item["barcode_detected"]).strip()
+
+            # Default pack_size and category_hint
+            if item.get("pack_size") is None:
+                item["pack_size"] = ""
+            if item.get("category_hint") is None:
+                item["category_hint"] = "عام"
+
+            # Default confidence_score between 0.0 and 1.0
+            if item.get("confidence_score") is None:
+                item["confidence_score"] = 0.85
+            else:
+                try:
+                    item["confidence_score"] = max(0.0, min(1.0, float(item["confidence_score"])))
+                except (ValueError, TypeError):
+                    item["confidence_score"] = 0.85
+
             draft_products.append(ExtractedDraftProductSchema(**item))
 
-    logger.info("Successfully extracted %d draft products from shelf image", len(draft_products))
+    logger.info("Successfully extracted %d draft products from shelf image using model '%s'", len(draft_products), selected_model)
     return draft_products
