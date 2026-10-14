@@ -8,11 +8,7 @@ from app.models.store import Store
 from app.schemas.store_schema import StoreCreate, StoreStatus, StoreUpdate
 
 
-def get_active_stores(
-    db: Session,
-    skip: int = 0,
-    limit: int = 20,
-) -> List[Store]:
+def get_active_stores(db: Session,skip: int = 0,limit: int = 20,) -> List[Store]:
     """Retrieve all approved and active stores with pagination."""
     return (
         db.query(Store)

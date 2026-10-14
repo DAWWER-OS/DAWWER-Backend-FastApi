@@ -49,18 +49,36 @@ for standard_key, synonyms in COLUMN_MAPPING.items():
         SYNONYM_LOOKUP[normalize_header(syn)] = standard_key
 
 
-def process_bulk_catalog_file(file_bytes: bytes, filename: str) -> Dict[str, Any]:
-    file_buffer = io.BytesIO(file_bytes)
+def process_bulk_catalog_file(file_input: Any, filename: str) -> Dict[str, Any]:
+    if isinstance(file_input, io.BytesIO):
+        file_buffer = file_input
+        file_buffer.seek(0)
+    elif isinstance(file_input, (bytes, bytearray)):
+        file_buffer = io.BytesIO(file_input)
+    else:
+        raise ValueError("Invalid file content: expected bytes or BytesIO buffer.")
+
     filename_lower = filename.lower()
 
     if filename_lower.endswith(".csv"):
         try:
+            file_buffer.seek(0)
             df = pd.read_csv(file_buffer, encoding="utf-8")
         except UnicodeDecodeError:
             file_buffer.seek(0)
             df = pd.read_csv(file_buffer, encoding="utf-8-sig")
+        except Exception as exc:
+            raise ValueError(f"فشل في معالجة ملف CSV: {str(exc)}")
     elif filename_lower.endswith((".xlsx", ".xls")):
-        df = pd.read_excel(file_buffer)
+        try:
+            file_buffer.seek(0)
+            df = pd.read_excel(file_buffer, engine="openpyxl")
+        except Exception:
+            try:
+                file_buffer.seek(0)
+                df = pd.read_excel(file_buffer)
+            except Exception as exc:
+                raise ValueError(f"فشل في معالجة ملف Excel: {str(exc)}")
     else:
         raise ValueError("Unsupported file format. Please upload a .csv or .xlsx file.")
 

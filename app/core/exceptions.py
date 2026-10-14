@@ -13,24 +13,47 @@ def http_exception_handler(
 ) -> JSONResponse:
     if isinstance(exc.detail, str):
         message = exc.detail
-        details = None
+        detail_val = exc.detail
+        code = f"HTTP_{exc.status_code}"
+        content = {
+            "success": False,
+            "error_code": code,
+            "code": code,
+            "message": message,
+            "detail": detail_val,
+        }
     elif isinstance(exc.detail, dict):
-        message = str(exc.detail.get("message", "Request error occurred"))
-        details = exc.detail
+        message = str(exc.detail.get("message") or exc.detail.get("detail") or "Request error occurred")
+        detail_val = exc.detail.get("detail") or exc.detail.get("message") or "Request error occurred"
+        code = str(exc.detail.get("code") or exc.detail.get("error_code") or f"HTTP_{exc.status_code}")
+        content = {
+            "success": False,
+            "error_code": code,
+            "code": code,
+            "message": message,
+            "detail": detail_val,
+            "details": exc.detail,
+        }
+        for k, v in exc.detail.items():
+            content[k] = v
     else:
         message = "Request error occurred"
-        details = exc.detail
+        content = {
+            "success": False,
+            "error_code": f"HTTP_{exc.status_code}",
+            "code": f"HTTP_{exc.status_code}",
+            "message": message,
+            "detail": exc.detail,
+            "details": exc.detail,
+        }
 
-    error_body = ErrorResponseModel(
-        success=False,
-        error_code=f"HTTP_{exc.status_code}",
-        message=message,
-        details=details,
-    )
+    headers = dict(exc.headers or {})
+    media_type = "application/problem+json" if ("type" in content or "title" in content) else "application/json"
     return JSONResponse(
         status_code=exc.status_code,
-        content=error_body.model_dump(),
-        headers=exc.headers,
+        content=content,
+        headers=headers,
+        media_type=media_type,
     )
 
 
@@ -79,7 +102,46 @@ def unhandled_exception_handler(
     )
 
 
+class AIQuotaExceededException(Exception):
+    """Raised when a store has exhausted its AI scan quota."""
+
+    def __init__(
+        self,
+        message: str = "The store has reached its AI scan quota.",
+        scans_used: int = 30,
+        scans_limit: int = 30,
+        resets_in_days: int = 0,
+        alternative: str = "EXCEL_BULK_IMPORT",
+    ) -> None:
+        self.message = message
+        self.scans_used = scans_used
+        self.scans_limit = scans_limit
+        self.resets_in_days = max(0, int(resets_in_days))
+        self.alternative = alternative
+        super().__init__(self.message)
+
+
+def ai_quota_exceeded_handler(
+    request: Request,
+    exc: AIQuotaExceededException,
+) -> JSONResponse:
+    """Returns flat JSON response for AI quota exceeded according to specification."""
+    content = {
+        "code": "AI_QUOTA_EXCEEDED",
+        "message": exc.message,
+        "scans_used": exc.scans_used,
+        "scans_limit": exc.scans_limit,
+        "resets_in_days": exc.resets_in_days,
+        "alternative": exc.alternative,
+    }
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content=content,
+    )
+
+
 def setup_exception_handlers(app: FastAPI) -> None:
+    app.add_exception_handler(AIQuotaExceededException, ai_quota_exceeded_handler)
     app.add_exception_handler(HTTPException, http_exception_handler)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)

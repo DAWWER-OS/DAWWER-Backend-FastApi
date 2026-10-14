@@ -9,14 +9,14 @@ from google import genai
 from google.genai import types
 
 from app.core.config import settings
-from app.schemas.shelf_job_schema import ExtractedDraftProductSchema
+from app.schemas.shelf_job_schema import ExtractedDraftProductSchema, GeminiExtractionResult
 
 logger = logging.getLogger("daweros_api.gemini")
 
-PRIMARY_MODEL = "gemini-2.5-flash"
+PRIMARY_MODEL = "gemini-1.5-flash"
 FALLBACK_MODELS = [
+    "gemini-2.5-flash",
     "gemini-2.0-flash",
-    "gemini-1.5-flash",
     "gemini-3-flash-preview",
     "gemini-3.1-flash-lite",
     "gemini-3.1-flash-lite-preview",
@@ -37,7 +37,7 @@ def get_gemini_client() -> genai.Client:
     return genai.Client(api_key=api_key_clean)
 
 
-def analyze_shelf_image(image_bytes: bytes) -> List[ExtractedDraftProductSchema]:
+def analyze_shelf_image(image_bytes: bytes) -> GeminiExtractionResult:
     if not image_bytes:
         raise ValueError("No image data provided")
 
@@ -52,25 +52,29 @@ def analyze_shelf_image(image_bytes: bytes) -> List[ExtractedDraftProductSchema]
     prompt = (
         "You are an expert retail computer vision assistant specializing in supermarket inventory and shelf inspection "
         "in Arabic and Palestinian retail store contexts.\n\n"
-        "Analyze this retail shelf photo and detect all visible distinct commercial retail products on the shelf.\n"
-        "For each detected product, extract its details and return a valid JSON array of objects with the following schema:\n"
-        "[\n"
-        "  {\n"
-        '    "proposed_name": "اسم المنتج الشائع بالعربية (مثال: حليب المراعي 2 لتر، جبنة كيري، شيبس شيبسي بالملح)",\n'
-        '    "estimated_price": 0.0,\n'
-        '    "category_hint": "الفئة (مثل: ألبان وأجبان، مشروبات وعصائر، سناكات وشوكولاتة، منظفات، مواد غذائية)",\n'
-        '    "pack_size": "حجم العبوة إن وجد (مثل: 500 مل، 1 كغم، 250 جم، أو نص فارغ \"\")",\n'
-        '    "barcode_detected": "الباركود إن كان ظاهراً ومقروءاً على العبوة أو بطاقة الرف، وإلا نص فارغ \"\"",\n'
-        '    "confidence_score": 0.90\n'
-        "  }\n"
-        "]\n\n"
+        "Analyze this retail shelf photo and detect all visible distinct commercial Fast-Moving Consumer Goods (FMCG) retail products on the shelf.\n"
+        "You MUST strictly return a valid JSON object matching the following structure:\n"
+        "{\n"
+        '  "status": "SUCCESS" | "NO_PRODUCTS_DETECTED",\n'
+        '  "message": "Localized explanation in Arabic (e.g. تم استخراج المنتجات بنجاح or لم يتم التعرف على أي منتجات تجارية)",\n'
+        '  "products": [\n'
+        "    {\n"
+        '      "proposed_name": "اسم المنتج الشائع بالعربية (مثال: حليب المراعي 2 لتر، جبنة كيري، شيبس شيبسي بالملح)",\n'
+        '      "estimated_price": 0.0,\n'
+        '      "category_hint": "الفئة (مثل: ألبان وأجبان، مشروبات وعصائر، سناكات وشوكولاتة، منظفات، مواد غذائية)",\n'
+        '      "pack_size": "حجم العبوة إن وجد (مثل: 500 مل، 1 كغم، 250 جم، أو نص فارغ \"\")",\n'
+        '      "barcode_detected": "الباركود إن كان ظاهراً ومقروءاً على العبوة أو بطاقة الرف، وإلا نص فارغ \"\"",\n'
+        '      "confidence_score": 0.90\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
         "Rules & Guidelines:\n"
-        "1. Detect every clearly visible product brand and packaging on the shelves.\n"
-        "2. Provide 'proposed_name' in Arabic as commonly called in local Palestinian/Arab grocery stores (or include English brand if prominent).\n"
-        "3. If a price tag is visible near or under the product, extract 'estimated_price' as a float; if no price is visible, use 0.0 as default.\n"
-        "4. If barcode is visible and legible, extract it into 'barcode_detected'; otherwise assign an empty string \"\".\n"
-        "5. If no products are visible at all, or the photo is completely blank/unrelated, return an empty array [].\n"
-        "6. Return ONLY the JSON array. Do not include markdown code block formatting (such as ```json) or explanatory text."
+        '1. If the photo shows supermarket or grocery retail shelves with commercial FMCG products, extract each distinct visible product, set "status": "SUCCESS", and populate "products".\n'
+        '2. If the image contains no FMCG retail products or shelves (e.g. out-of-domain images, people, drawings, documents, blank walls, or non-shelf photos), you MUST strictly set "status": "NO_PRODUCTS_DETECTED", "products": [], and explain in "message" that no retail products were detected.\n'
+        "3. Provide 'proposed_name' in Arabic as commonly called in local Palestinian/Arab grocery stores (or include English brand if prominent).\n"
+        "4. If a price tag is visible near or under the product, extract 'estimated_price' as a float; if no price is visible, use 0.0 as default.\n"
+        "5. If barcode is visible and legible, extract it into 'barcode_detected'; otherwise assign an empty string \"\".\n"
+        "6. Return ONLY the raw JSON object. Do not wrap in markdown code blocks (such as ```json) or conversational text."
     )
 
     models_to_try = [PRIMARY_MODEL] + [m for m in FALLBACK_MODELS if m != PRIMARY_MODEL]
@@ -134,27 +138,48 @@ def analyze_shelf_image(image_bytes: bytes) -> List[ExtractedDraftProductSchema]
         print(f"\n[GEMINI PARSE ERROR] {err_detail}\n{traceback.format_exc()}", file=sys.stderr, flush=True)
         raise ValueError(err_detail)
 
-    if not isinstance(data, list):
-        # In case model returned a single dictionary wrapping a list e.g. {"products": [...]}
-        if isinstance(data, dict):
-            for key in ("products", "items", "detected_products", "data", "draft_products"):
-                if key in data and isinstance(data[key], list):
-                    data = data[key]
-                    break
-            else:
-                data = [data]
-        else:
-            raise ValueError("Gemini output must be a JSON array of products")
+    status_detected = "SUCCESS"
+    status_message: str | None = None
+    raw_items: list = []
 
-    if len(data) == 0:
+    if isinstance(data, dict):
+        raw_status = data.get("status")
+        if raw_status in ("NO_PRODUCTS_DETECTED", "SUCCESS"):
+            status_detected = raw_status
+        elif raw_status:
+            status_detected = str(raw_status).upper()
+
+        status_message = data.get("message")
+
+        for key in ("products", "items", "detected_products", "data", "draft_products"):
+            if key in data and isinstance(data[key], list):
+                raw_items = data[key]
+                break
+        else:
+            if status_detected == "NO_PRODUCTS_DETECTED":
+                raw_items = []
+            elif "proposed_name" in data or "name" in data:
+                raw_items = [data]
+            else:
+                raw_items = []
+    elif isinstance(data, list):
+        raw_items = data
+        status_detected = "SUCCESS" if len(raw_items) > 0 else "NO_PRODUCTS_DETECTED"
+    else:
+        raise ValueError("Gemini output must be a JSON object or array")
+
+    if len(raw_items) == 0:
+        status_detected = "NO_PRODUCTS_DETECTED"
+        if not status_message:
+            status_message = "لم يتم العثور على أي منتجات في الصورة."
         logger.warning(
-            "Gemini response parsed into an empty product array []. Model: '%s'. Raw response was:\n%s",
+            "Gemini response indicates NO_PRODUCTS_DETECTED (Gemini response parsed into an empty product array []). Model: '%s'. Raw response was:\n%s",
             selected_model,
             response.text,
         )
 
     draft_products = []
-    for item in data:
+    for item in raw_items:
         if isinstance(item, dict):
             # Ensure required proposed_name has a fallback if missing
             if not item.get("proposed_name"):
@@ -192,5 +217,20 @@ def analyze_shelf_image(image_bytes: bytes) -> List[ExtractedDraftProductSchema]
 
             draft_products.append(ExtractedDraftProductSchema(**item))
 
-    logger.info("Successfully extracted %d draft products from shelf image using model '%s'", len(draft_products), selected_model)
-    return draft_products
+    has_warning = (status_detected == "NO_PRODUCTS_DETECTED") or (len(draft_products) == 0)
+    warning_code = "NO_PRODUCTS_FOUND" if has_warning else None
+
+    logger.info(
+        "Successfully processed Gemini extraction: status=%s, count=%d from model '%s'",
+        status_detected,
+        len(draft_products),
+        selected_model,
+    )
+
+    return GeminiExtractionResult(
+        status=status_detected,
+        products=draft_products,
+        message=status_message,
+        has_warning=has_warning,
+        warning_code=warning_code,
+    )

@@ -1,3 +1,4 @@
+import json
 import uuid
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -6,19 +7,140 @@ from sqlalchemy.sql import func
 
 from app.api.deps import get_db, verify_store_access
 from app.models.product import StoreProduct
-from app.models.shelf_job import DraftProduct
+from app.models.scan_job import ScanJob
+from app.models.shelf_job import DraftProduct, ShelfJob
 from app.schemas.draft_product_schema import (
     DraftProductApprovalResponseSchema,
     DraftProductBatchApproveSchema,
     DraftProductDeleteResponseSchema,
     DraftProductResponseSchema,
     DraftProductUpdateSchema,
+    ProductDraftJobDetailsResponseSchema,
 )
 from app.services import shelf_job_service
 
 router = APIRouter(prefix="/api/v1/stores", tags=["AI Draft Approvals & Review"])
 
 
+@router.get(
+    "/{store_id}/product-drafts/{job_id}",
+    response_model=ProductDraftJobDetailsResponseSchema,
+    status_code=status.HTTP_200_OK,
+    summary="Get product draft details and status by job ID",
+    description="Retrieve extraction details, warning flags, and localized guidance messages for a shelf scan job under BR-17.",
+)
+def get_product_drafts_by_job(
+    store_id: str,
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(verify_store_access),
+) -> ProductDraftJobDetailsResponseSchema:
+    # 1. Look up ShelfJob by job_id
+    shelf_job = (
+        db.query(ShelfJob)
+        .filter(ShelfJob.id == job_id, ShelfJob.store_id == store_id)
+        .first()
+    )
+
+    # 2. Look up ScanJob by job_id if not directly matching a shelf job
+    scan_job = None
+    if not shelf_job:
+        scan_job = (
+            db.query(ScanJob)
+            .filter(ScanJob.id == job_id, ScanJob.store_id == store_id)
+            .first()
+        )
+        if scan_job and scan_job.shelf_job_id:
+            shelf_job = (
+                db.query(ShelfJob)
+                .filter(ShelfJob.id == scan_job.shelf_job_id, ShelfJob.store_id == store_id)
+                .first()
+            )
+
+    if not shelf_job and not scan_job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Product drafts job '{job_id}' not found",
+        )
+
+    # 3. Retrieve draft products
+    drafts = []
+    if shelf_job:
+        drafts = (
+            db.query(DraftProduct)
+            .filter(DraftProduct.shelf_job_id == shelf_job.id, DraftProduct.store_id == store_id)
+            .all()
+        )
+
+    products_count = len(drafts)
+    status_str = shelf_job.status if shelf_job else (scan_job.status if scan_job else "PROCESSING")
+
+    # 4. Extract warning metadata
+    has_warning = False
+    warning_code = None
+    user_message = None
+
+    if shelf_job and shelf_job.error_message:
+        try:
+            meta = json.loads(shelf_job.error_message)
+            if isinstance(meta, dict):
+                has_warning = meta.get("has_warning", False) or "warning" in meta or "warning_code" in meta
+                warning_code = meta.get("warning_code") or meta.get("warning") or meta.get("code")
+                user_message = meta.get("user_message") or meta.get("message")
+        except Exception:
+            if "NO_PRODUCTS_FOUND" in shelf_job.error_message:
+                has_warning = True
+                warning_code = "NO_PRODUCTS_FOUND"
+                user_message = "لم يتعرف النظام على أي منتجات تجارية في هذه الصورة. يرجى التأكد من توجيه الكاميرا لرف حقيقي ومضاء جيداً."
+
+    # If products_count == 0 and status is REVIEW_REQUIRED (or 0 products detected)
+    if products_count == 0 and (status_str == "REVIEW_REQUIRED" or (shelf_job and shelf_job.extracted_drafts_count == 0)):
+        has_warning = True
+        warning_code = warning_code or "NO_PRODUCTS_FOUND"
+        user_message = user_message or "لم يتعرف النظام على أي منتجات تجارية في هذه الصورة. يرجى التأكد من توجيه الكاميرا لرف حقيقي ومضاء جيداً."
+
+    metadata = {
+        "warning": warning_code,
+        "warning_code": warning_code,
+        "user_message": user_message,
+        "products_count": products_count,
+        "status": status_str,
+    } if has_warning else None
+
+    resolved_id = shelf_job.id if shelf_job else (scan_job.id if scan_job else job_id)
+
+    response_dict = {
+        "id": resolved_id,
+        "job_id": job_id,
+        "jobId": job_id,
+        "store_id": store_id,
+        "storeId": store_id,
+        "status": status_str,
+        "products_count": products_count,
+        "productsCount": products_count,
+        "has_warning": has_warning,
+        "hasWarning": has_warning,
+        "warning_code": warning_code,
+        "warningCode": warning_code,
+        "user_message": user_message,
+        "userMessage": user_message,
+        "warning": warning_code,
+        "message": user_message,
+        "products": [DraftProductResponseSchema.model_validate(d) for d in drafts],
+        "metadata": metadata,
+        "created_at": shelf_job.created_at if shelf_job else (scan_job.created_at if scan_job else None),
+        "updated_at": shelf_job.updated_at if shelf_job else (scan_job.updated_at if scan_job else None),
+    }
+    return ProductDraftJobDetailsResponseSchema(**response_dict)
+
+
+@router.get(
+    "/{store_id}/product-drafts",
+    response_model=List[DraftProductResponseSchema],
+    status_code=status.HTTP_200_OK,
+    summary="List extracted AI draft products (alias)",
+    include_in_schema=False,
+)
 @router.get(
     "/{store_id}/draft-products",
     response_model=List[DraftProductResponseSchema],

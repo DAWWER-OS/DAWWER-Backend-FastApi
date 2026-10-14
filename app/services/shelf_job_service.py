@@ -1,3 +1,4 @@
+import json
 import logging
 import sys
 import traceback
@@ -5,6 +6,7 @@ from typing import List, Optional
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.models.audit_log import AuditLog
 from app.models.shelf_job import DraftProduct, ShelfJob
 from app.models.store import Store
 from app.schemas.shelf_job_schema import JobStatusEnum, ShelfJobCreateSchema
@@ -74,9 +76,43 @@ def process_shelf_capture_job(
     # 2. Multimodal AI Analysis with Gemini
     try:
         extracted_items = gemini_service.analyze_shelf_image(image_bytes)
+        products = getattr(extracted_items, "products", extracted_items)
+        extraction_status = getattr(
+            extracted_items,
+            "status",
+            "SUCCESS" if len(products) > 0 else "NO_PRODUCTS_DETECTED",
+        )
+        is_no_products = (len(products) == 0) or (extraction_status == "NO_PRODUCTS_DETECTED")
+
+        if is_no_products:
+            warning_data = {
+                "warning": "NO_PRODUCTS_FOUND",
+                "warning_code": "NO_PRODUCTS_FOUND",
+                "user_message": "لم يتعرف النظام على أي منتجات تجارية في هذه الصورة. يرجى التأكد من توجيه الكاميرا لرف حقيقي ومضاء جيداً.",
+                "has_warning": True,
+                "products_count": 0,
+                "status": "REVIEW_REQUIRED",
+            }
+            job.status = ShelfJobStatus.REVIEW_REQUIRED.value
+            job.extracted_drafts_count = 0
+            job.error_message = json.dumps(warning_data, ensure_ascii=False)
+
+            # BR-17 Human-in-the-loop audit log
+            audit_record = AuditLog(
+                store_id=store_id,
+                action="SHELF_SCAN_REVIEW_REQUIRED",
+                entity_type="shelf_job",
+                entity_id=str(job.id),
+                new_value=json.dumps(warning_data, ensure_ascii=False),
+            )
+            db.add(audit_record)
+            db.commit()
+            db.refresh(job)
+            logger.info("Shelf job %s saved with status REVIEW_REQUIRED (0 products found)", job.id)
+            return job
 
         draft_records = []
-        for item in extracted_items:
+        for item in products:
             draft = DraftProduct(
                 store_id=store_id,
                 shelf_job_id=job.id,

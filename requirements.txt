@@ -14,4 +14,5 @@ httpx
 openpyxl
 python-multipart
 psycopg[binary]
+alembic
 

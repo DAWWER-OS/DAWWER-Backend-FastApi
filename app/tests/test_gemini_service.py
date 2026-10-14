@@ -60,3 +60,58 @@ def test_analyze_shelf_image_handles_empty_response(caplog):
 
     assert results == []
     assert "Gemini response parsed into an empty product array" in caplog.text
+
+
+def test_analyze_shelf_image_structured_success():
+    mock_raw = json.dumps({
+        "status": "SUCCESS",
+        "message": "تم استخراج المنتجات بنجاح",
+        "products": [
+            {
+                "proposed_name": "شيبس ليز بالملح",
+                "estimated_price": 2.5,
+                "category_hint": "سناكات",
+                "pack_size": "50 جم",
+                "barcode_detected": "12345678",
+                "confidence_score": 0.92,
+            }
+        ]
+    })
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = mock_raw
+    mock_client.models.generate_content.return_value = mock_response
+
+    with patch("app.services.gemini_service.get_gemini_client", return_value=mock_client):
+        result = analyze_shelf_image(b"\xff\xd8\xffimage")
+
+    assert result.status == "SUCCESS"
+    assert result.has_warning is False
+    assert result.warning_code is None
+    assert len(result.products) == 1
+    assert result.products[0].proposed_name == "شيبس ليز بالملح"
+    assert result[0].proposed_name == "شيبس ليز بالملح"
+
+
+def test_analyze_shelf_image_structured_no_products_detected(caplog):
+    mock_raw = json.dumps({
+        "status": "NO_PRODUCTS_DETECTED",
+        "message": "لم يتم التعرف على أي منتجات تجارية في الصورة",
+        "products": []
+    })
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = mock_raw
+    mock_client.models.generate_content.return_value = mock_response
+
+    with patch("app.services.gemini_service.get_gemini_client", return_value=mock_client):
+        with caplog.at_level("WARNING"):
+            result = analyze_shelf_image(b"\xff\xd8\xffimage")
+
+    assert result.status == "NO_PRODUCTS_DETECTED"
+    assert result.has_warning is True
+    assert result.warning_code == "NO_PRODUCTS_FOUND"
+    assert len(result) == 0
+    assert result.products == []
+    assert result == []
+    assert "NO_PRODUCTS_DETECTED" in caplog.text

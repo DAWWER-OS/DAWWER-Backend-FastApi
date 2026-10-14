@@ -5,6 +5,7 @@ from app.models.category import Category
 from app.models.import_job import ImportJob
 from app.models.map_models import MapEdge, MapNode, MapNodeType, StoreMap
 from app.models.product import ProductLocation, StoreProduct
+from app.models.scan_job import ScanJob, ScanJobStatus
 from app.models.shelf_job import DraftProduct, ShelfJob
 from app.models.store import Store
 from app.models.store_document import StoreDocument
@@ -14,6 +15,7 @@ from app.models.store_rbac import (
     StoreRolePermission,
     StoreStaff,
     StoreStaffPermission,
+    StoreUser,
 )
 from app.models.user import User
 
@@ -30,11 +32,14 @@ __all__ = [
     "ImportJob",
     "ShelfJob",
     "DraftProduct",
+    "ScanJob",
+    "ScanJobStatus",
     "StoreRole",
     "StorePermission",
     "StoreRolePermission",
     "StoreStaff",
     "StoreStaffPermission",
+    "StoreUser",
     "StoreDocument",
     "RefreshToken",
     "RevokedToken",

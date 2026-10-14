@@ -1,18 +1,95 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db, verify_store_access
 from app.models.shelf_job import ShelfJob
+from app.schemas.ai_quota_schema import ScanJobAcceptedResponseSchema
 from app.schemas.draft_product_schema import DraftProductDeleteResponseSchema
 from app.schemas.shelf_job_schema import (
     ShelfJobCreateSchema,
     ShelfJobDeleteResponseSchema,
     ShelfJobResponseSchema,
 )
-from app.services import shelf_job_service
+from app.schemas.token import TokenPayload
+from app.services import (
+    ai_quota_service,
+    image_validation_service,
+    shelf_job_service,
+)
+from app.services.shelf_extraction_worker import (
+    process_gemini_vision_bg,
+    process_shelf_extraction_async,
+)
 
 router = APIRouter(prefix="/api/v1/stores", tags=["Shelf Jobs & Gemini AI Capture"])
+
+
+@router.post(
+    "/{store_id}/shelves/extract-async",
+    response_model=ScanJobAcceptedResponseSchema,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Asynchronous AI shelf capture and quota-managed product extraction",
+    description="Validates image payload, verifies quota reservation under BR-14 tenant isolation, and enqueues background Gemini extraction.",
+)
+async def extract_shelf_async(
+    store_id: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    zone: str = Form("A"),
+    aisle: str = Form("1"),
+    rack: Optional[str] = Form(None),
+    shelf: Optional[str] = Form(None),
+    x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
+    idempotency_key_header: Optional[str] = Header(None, alias="Idempotency-Key"),
+    idempotency_key_form: Optional[str] = Form(None, alias="idempotency_key"),
+    db: Session = Depends(get_db),
+    current_user: TokenPayload = Depends(verify_store_access),
+) -> ScanJobAcceptedResponseSchema:
+    # 1. Strict Pre-Lock Image Validation (bounded chunked read, magic signature check, Pillow verify)
+    image_bytes, _ = await image_validation_service.validate_image_upload(file)
+
+    # 2. Resolve optional idempotency key
+    idempotency_key = x_idempotency_key or idempotency_key_header or idempotency_key_form
+
+    # 3. Atomic Quota Check & Reservation Transaction (with SELECT ... FOR UPDATE)
+    job, is_replay = ai_quota_service.reserve_scan_quota(
+        db=db,
+        store_id=store_id,
+        idempotency_key=idempotency_key,
+    )
+
+    # 4. Enqueue background processing if newly created or pending replay
+    location_in = ShelfJobCreateSchema(zone=zone, aisle=aisle, rack=rack, shelf=shelf)
+    if not is_replay or job.status == "PENDING":
+        background_tasks.add_task(
+            process_gemini_vision_bg,
+            job_id=str(job.id),
+            store_id=store_id,
+            image_bytes=image_bytes,
+            location_in=location_in,
+            filename=file.filename,
+        )
+
+    return ScanJobAcceptedResponseSchema(
+        job_id=str(job.id),
+        store_id=str(job.store_id),
+        status=job.status,
+        created_at=job.created_at,
+        message="Scan job accepted for processing" if not is_replay else f"Existing scan job returned ({job.status})",
+        idempotency_key=job.idempotency_key,
+    )
 
 
 @router.post(

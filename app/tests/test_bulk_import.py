@@ -179,3 +179,98 @@ def test_bulk_import_missing_mandatory_columns_error(store):
     res_data = response.json()
     err_text = res_data.get("message") or res_data.get("detail") or str(res_data)
     assert "الأعمدة الإلزامية" in err_text
+
+
+def test_bulk_import_excel_success(store):
+    import pandas as pd
+    token = create_token(user_id=store.owner_id, store_id=store.id)
+    df = pd.DataFrame([
+        {
+            "store_sku": "SKU-XL-101",
+            "product_name": "Organic Milk",
+            "category": "Dairy",
+            "price": 12.50,
+            "zone": "Zone Cold",
+            "aisle": "Aisle 4",
+            "map_target": "FRIDGE-1",
+            "quantity": 50,
+        }
+    ])
+    excel_io = io.BytesIO()
+    with pd.ExcelWriter(excel_io, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False)
+    excel_io.seek(0)
+
+    files = {"file": ("catalog.xlsx", excel_io, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = client.post(f"/api/v1/stores/{store.id}/catalog/bulk-import", headers=headers, files=files)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["valid_count"] == 1
+    assert data["valid_records"][0]["product_name"] == "Organic Milk"
+
+
+def test_bulk_import_token_expired(store):
+    # Expired token (issued in the past with exp in the past)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    expired_payload = {
+        "sub": str(store.owner_id),
+        "role": "Merchant",
+        "store_id": str(store.id),
+        "iss": settings.JWT_ISSUER,
+        "aud": settings.JWT_AUDIENCE,
+        "exp": int((now - datetime.timedelta(hours=2)).timestamp()),
+        "iat": int((now - datetime.timedelta(hours=3)).timestamp()),
+    }
+    expired_token = jwt.encode(expired_payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    files = {"file": ("catalog.csv", io.BytesIO(b"product_name,price\nItem,10\n"), "text/csv")}
+    headers = {"Authorization": f"Bearer {expired_token}"}
+
+    response = client.post(f"/api/v1/stores/{store.id}/catalog/bulk-import", headers=headers, files=files)
+    assert response.status_code == 401
+    data = response.json()
+    assert data.get("code") == "TOKEN_EXPIRED"
+    assert "انتهت جلسة الدخول" in data.get("message", "")
+
+
+def test_bulk_import_store_scoping_merchant_success(store):
+    # Merchant with matching store_id
+    merchant_token = create_token(user_id=store.owner_id, role="Merchant", store_id=store.id)
+    csv_content = (
+        "store_sku,product_name,category,price,zone,aisle,map_target\n"
+        "SKU-M-101,Tablet,Electronics,450.0,Zone T,Aisle 1,Node 9\n"
+    )
+    files = {"file": ("catalog_merchant.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    headers = {"Authorization": f"Bearer {merchant_token}"}
+
+    response = client.post(f"/api/v1/stores/{store.id}/catalog/bulk-import", headers=headers, files=files)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["valid_count"] == 1
+
+
+def test_bulk_import_store_scoping_forbidden_code(store):
+    other_token = create_token(user_id="unauthorized_user_1", role="Merchant", store_id="unrelated_store_id")
+    files = {"file": ("catalog.csv", io.BytesIO(b"product_name,price\nItem,10\n"), "text/csv")}
+    headers = {"Authorization": f"Bearer {other_token}"}
+
+    response = client.post(f"/api/v1/stores/{store.id}/catalog/bulk-import", headers=headers, files=files)
+    assert response.status_code == 403
+    data = response.json()
+    assert data.get("code") == "STORE_ACCESS_DENIED"
+
+
+def test_bulk_import_empty_file_problem_details(store):
+    token = create_token(user_id=store.owner_id, store_id=store.id)
+    files = {"file": ("empty.xlsx", io.BytesIO(b""), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = client.post(f"/api/v1/stores/{store.id}/catalog/bulk-import", headers=headers, files=files)
+    assert response.status_code == 400
+    data = response.json()
+    assert "type" in data
+    assert "title" in data
+    assert "status" in data
+    assert data.get("code") == "EMPTY_FILE"
+

@@ -1,5 +1,6 @@
+import datetime
 import uuid
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Numeric, String, Text, text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from app.db.session import Base
@@ -7,6 +8,10 @@ from app.db.session import Base
 
 def generate_uuid() -> str:
     return str(uuid.uuid4())
+
+
+def default_ai_scans_reset_at() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=30)
 
 
 class Store(Base):
@@ -61,3 +66,11 @@ class Store(Base):
     created_by = Column(Text, nullable=True)
     updated_by = Column(Text, nullable=True)
     is_active = Column(Boolean, nullable=True, default=True, server_default=text("true"))
+    ai_scans_limit = Column(Integer, nullable=False, default=30, server_default=text("30"))
+    ai_scans_used = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    ai_scans_reset_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=default_ai_scans_reset_at,
+        server_default=text("now() + interval '30 days'"),
+    )

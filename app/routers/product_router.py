@@ -1,8 +1,9 @@
-from typing import List
+import io
+from typing import Any, List
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, verify_store_access
+from app.api.deps import get_current_merchant, get_db, verify_store_access
 from app.schemas.import_schema import BulkImportSummaryResponse
 from app.schemas.product_schema import (
     ProductCreateSchema,
@@ -192,17 +193,58 @@ async def bulk_import_catalog(
     db: Session = Depends(get_db),
     current_user=Depends(verify_store_access),
 ) -> BulkImportSummaryResponse:
-    contents = await file.read()
+    # 1. Asynchronously read raw binary bytes without text/UTF-8 decoding to preserve binary zip headers (PK...xml)
+    file_bytes = await file.read()
     filename = file.filename or "unknown"
+
+    if not file_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "type": "https://api.dawer.com/errors/empty-file",
+                "title": "Empty File",
+                "status": 400,
+                "detail": "الملف المرفوع فارغ. يرجى رفع ملف CSV أو Excel صالح.",
+                "instance": f"/api/v1/stores/{store_id}/catalog/bulk-import",
+                "code": "EMPTY_FILE",
+                "message": "الملف المرفوع فارغ. يرجى رفع ملف CSV أو Excel صالح.",
+            },
+        )
+
+    # 2. Wrap binary content inside an in-memory BytesIO buffer
+    excel_buffer = io.BytesIO(file_bytes)
 
     job = create_import_job(db, store_id, filename)
 
     try:
-        summary = process_bulk_catalog_file(contents, filename)
+        summary = process_bulk_catalog_file(excel_buffer, filename)
     except ValueError as exc:
+        err_msg = str(exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
+            detail={
+                "type": "https://api.dawer.com/errors/invalid-file-structure",
+                "title": "Invalid File Structure",
+                "status": 400,
+                "detail": err_msg,
+                "instance": f"/api/v1/stores/{store_id}/catalog/bulk-import",
+                "code": "INVALID_FILE_STRUCTURE",
+                "message": err_msg,
+            },
+        )
+    except Exception as exc:
+        err_msg = f"خطأ أثناء معالجة الملف '{filename}': {str(exc)}"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "type": "https://api.dawer.com/errors/file-parsing-error",
+                "title": "File Parsing Error",
+                "status": 400,
+                "detail": err_msg,
+                "instance": f"/api/v1/stores/{store_id}/catalog/bulk-import",
+                "code": "FILE_PARSING_ERROR",
+                "message": err_msg,
+            },
         )
 
     save_bulk_import_results(db, job.id, store_id, summary)

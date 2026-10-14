@@ -5,6 +5,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.core.security import (
+    get_current_merchant,
     get_current_user,
     require_role,
     security_scheme,
@@ -17,6 +18,7 @@ from app.schemas.token import TokenPayload
 __all__ = [
     "security_scheme",
     "get_current_user",
+    "get_current_merchant",
     "require_role",
     "verify_store_access",
     "verify_token",

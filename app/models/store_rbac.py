@@ -180,3 +180,9 @@ class StoreStaffPermission(Base):
     updated_at = Column(DateTime(timezone=True), nullable=True, onupdate=func.now())
     created_by = Column(Text, nullable=True)
     updated_by = Column(Text, nullable=True)
+
+
+# Alias StoreUser to StoreStaff for store scoping and RBAC contracts
+StoreUser = StoreStaff
+
+

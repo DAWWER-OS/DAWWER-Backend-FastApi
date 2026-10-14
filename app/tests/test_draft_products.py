@@ -238,3 +238,77 @@ def test_draft_product_isolation_br14_forbidden(store, sample_draft):
         headers=headers,
     )
     assert approve_resp.status_code == 403
+
+
+def test_get_product_drafts_by_job_with_warning_when_zero_products(store):
+    import json
+    token = create_token(user_id=store.owner_id, store_id=store.id)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    job_id = f"JOB-0898-{uuid.uuid4().hex[:6]}"
+    warning_metadata = {
+        "warning": "NO_PRODUCTS_FOUND",
+        "warning_code": "NO_PRODUCTS_FOUND",
+        "user_message": "لم يتعرف النظام على أي منتجات تجارية في هذه الصورة. يرجى التأكد من توجيه الكاميرا لرف حقيقي ومضاء جيداً.",
+        "has_warning": True,
+        "products_count": 0,
+        "status": "REVIEW_REQUIRED",
+    }
+
+    db = SessionLocal()
+    try:
+        shelf_job = ShelfJob(
+            id=job_id,
+            store_id=store.id,
+            status="REVIEW_REQUIRED",
+            zone="A",
+            aisle="1",
+            extracted_drafts_count=0,
+            error_message=json.dumps(warning_metadata, ensure_ascii=False),
+        )
+        db.add(shelf_job)
+        db.commit()
+    finally:
+        db.close()
+
+    # Query GET /api/v1/stores/{store_id}/product-drafts/{job_id}
+    response = client.get(
+        f"/api/v1/stores/{store.id}/product-drafts/{job_id}",
+        headers=headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # Verify Requirement 3 specifications:
+    assert data["productsCount"] == 0
+    assert data["hasWarning"] is True
+    assert data["warningCode"] == "NO_PRODUCTS_FOUND"
+    assert data["userMessage"] == "لم يتعرف النظام على أي منتجات تجارية في هذه الصورة. يرجى التأكد من توجيه الكاميرا لرف حقيقي ومضاء جيداً."
+    assert data["status"] == "REVIEW_REQUIRED"
+    assert data["products"] == []
+
+
+def test_get_product_drafts_by_job_with_products(store, sample_draft):
+    token = create_token(user_id=store.owner_id, store_id=store.id)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = client.get(
+        f"/api/v1/stores/{store.id}/product-drafts/{sample_draft.shelf_job_id}",
+        headers=headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["productsCount"] >= 1
+    assert data["hasWarning"] is False
+    assert len(data["products"]) >= 1
+
+
+def test_get_product_drafts_by_job_br14_isolation(store, sample_draft):
+    other_token = create_token(user_id=str(uuid.uuid4()), role="User", store_id=str(uuid.uuid4()))
+    headers = {"Authorization": f"Bearer {other_token}"}
+
+    response = client.get(
+        f"/api/v1/stores/{store.id}/product-drafts/{sample_draft.shelf_job_id}",
+        headers=headers,
+    )
+    assert response.status_code == 403

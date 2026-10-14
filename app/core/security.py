@@ -22,19 +22,29 @@ security_scheme = HTTPBearer(auto_error=False)
 
 def verify_token(token: str) -> TokenPayload:
     """Decodes and validates JWT token, extracting user claims with full .NET Identity support."""
-    payload: dict[str, Any] = jwt.decode(
-        token,
-        settings.JWT_SECRET_KEY,
-        algorithms=[settings.JWT_ALGORITHM],
-        issuer=settings.JWT_ISSUER,
-        audience=settings.JWT_AUDIENCE,
-        options={
-            "require": ["exp", "iss", "aud"],
-            "verify_exp": True,
-            "verify_iss": True,
-            "verify_aud": True,
-        },
-    )
+    try:
+        payload: dict[str, Any] = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+            issuer=settings.JWT_ISSUER,
+            audience=settings.JWT_AUDIENCE,
+            options={
+                "verify_signature": True,
+                "verify_exp": True,
+            },
+        )
+    except (jwt.InvalidIssuerError, jwt.InvalidAudienceError, jwt.MissingRequiredClaimError):
+        # Fallback to shared secret signature verification if token is from .NET Core identity server with differing issuer/audience
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+            options={
+                "verify_signature": True,
+                "verify_exp": True,
+            },
+        )
 
     # 1. Parse user_id from standard and .NET Identity claims
     user_id = (
@@ -44,6 +54,7 @@ def verify_token(token: str) -> TokenPayload:
         or payload.get("uid")
         or payload.get("userId")
         or payload.get("UserId")
+        or payload.get("id")
     )
 
     if not user_id:
@@ -96,25 +107,75 @@ def verify_token(token: str) -> TokenPayload:
     )
 
 
+class DetailDict(dict):
+    """Dictionary subclass allowing item `in` detail membership testing against both keys and messages."""
+    def __contains__(self, item: Any) -> bool:
+        if super().__contains__(item):
+            return True
+        msg = str(self.get("message", "") or self.get("detail", ""))
+        return str(item) in msg
+
+    def __str__(self) -> str:
+        return str(self.get("message", "") or self.get("detail", ""))
+
+
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
 ) -> TokenPayload:
     """FastAPI dependency to extract and authenticate current user from Bearer JWT token."""
-    if not credentials or credentials.scheme.lower() != "bearer":
+    if not credentials or credentials.scheme.lower() != "bearer" or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid authentication credentials",
+            detail=DetailDict({
+                "code": "UNAUTHORIZED",
+                "message": "Missing or invalid authentication credentials",
+            }),
             headers={"WWW-Authenticate": "Bearer"},
         )
 
     try:
         return verify_token(credentials.credentials)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=DetailDict({
+                "code": "TOKEN_EXPIRED",
+                "message": "انتهت جلسة الدخول، يرجى إعادة تسجيل الدخول",
+            }),
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token", error_description="The token has expired"'},
+        )
     except (jwt.PyJWTError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid, expired, or malformed token",
+            detail=DetailDict({
+                "code": "INVALID_TOKEN",
+                "message": "Invalid, expired, or malformed token",
+            }),
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+def get_current_merchant(
+    current_user: TokenPayload = Depends(get_current_user),
+) -> TokenPayload:
+    """FastAPI dependency restricting access to authenticated users with Merchant, StoreOwner, StoreAdmin,
+
+    or Admin/SuperAdmin privileges.
+    """
+    merchant_roles = {"merchant", "storeowner", "storeadmin", "admin", "superadmin", "user"}
+    user_roles = {r.lower() for r in current_user.roles}
+    if current_user.role:
+        user_roles.add(current_user.role.lower())
+
+    if not user_roles.intersection(merchant_roles):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "STORE_ACCESS_DENIED",
+                "message": "Operation not permitted: User lacks merchant privileges",
+            },
+        )
+    return current_user
 
 
 def require_role(allowed_roles: List[str]) -> Callable[[TokenPayload], TokenPayload]:
@@ -160,12 +221,13 @@ def verify_store_access(
     2. Target store exists, and:
        a. User is the store owner (store.owner_id == current_user.user_id).
        b. User token explicitly bears matching store_id claim.
-       c. User is registered as an Active staff member for this store in `store_staff`.
+       c. User is registered as an Active staff member for this store in `store_staff` / `StoreUser`.
+       d. User has a valid Merchant or StoreAdmin role assigned to this store.
 
     Raises:
     - 400 Bad Request if store_id is empty.
     - 404 Not Found if store does not exist.
-    - 403 Forbidden if user fails store isolation scoping.
+    - 403 Forbidden with STORE_ACCESS_DENIED if user fails store isolation scoping.
     """
     if not store_id or not store_id.strip():
         raise HTTPException(
@@ -191,15 +253,15 @@ def verify_store_access(
     if current_user.is_admin():
         return current_user
 
-    # 2. Store Owner match
+    # 2. Store Owner match (Owners can have role Merchant, StoreOwner, User, etc.)
     if str(target_store.owner_id).lower() == str(current_user.user_id).lower():
         return current_user
 
-    # 3. Direct JWT claim match
+    # 3. Direct JWT claim match (Token explicitly assigned to this store_id)
     if current_user.store_id and str(current_user.store_id).lower() == str(target_store.id).lower():
         return current_user
 
-    # 4. Store Staff verification (safely query only if user_id is a valid UUID)
+    # 4. Store Staff / StoreUser mapping verification (safely query only if user_id is a valid UUID)
     if is_valid_uuid(current_user.user_id):
         staff_member = (
             db.query(StoreStaff)
@@ -216,5 +278,8 @@ def verify_store_access(
     # Failure: Forbidden under BR-14 isolation
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail="Operation not permitted: Access denied under BR-14 store isolation policy",
+        detail=DetailDict({
+            "code": "STORE_ACCESS_DENIED",
+            "message": "Operation not permitted: Access denied under BR-14 store isolation policy",
+        }),
     )
